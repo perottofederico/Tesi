@@ -58,7 +58,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-from utils import log_validation, make_train_dataset, save_model_card, parse_args, compute_gram_loss
+from utils import log_validation, make_train_dataset, save_model_card, parse_args, compute_gram_loss, accel_compute_gram_loss
 from gram_utils import volume_computation3
 
 if is_wandb_available():
@@ -312,25 +312,15 @@ def main(args):
     # Projection Layers
     latents_proj = nn.Linear(4, 128, bias=False).to(accelerator.device)
     text_proj = nn.Linear(1024, 128, bias=False).to(accelerator.device)
-    controlnet_image_proj = nn.Linear(320, 128, bias=False).to(accelerator.device)
+    controlnet_image_proj = nn.Linear(64, 128, bias=False).to(accelerator.device)
     hidden_trans_image_multimodal = nn.Sequential(
-            nn.Linear(4, 1024),  # 4 is the latent channel dimension from vae (not like video token embedding), 1024 is the multimodal dim, which i think is just the hidden dimension of the text encoder (bert uses 768)
+            nn.Linear(4, 1024),  # 4 is the channel dimension from vae, 1024 is the multimodal dim, which i think is just the hidden dimension of the text encoder (bert uses 768)
             nn.LayerNorm(1024, eps=1e-12)
         ).to(accelerator.device)
     hidden_trans_eeg_multimodal = nn.Sequential(
             nn.Linear(320, 1024),  # 320 is from the EEG encoder, 1024 is the multimodal dimension
             nn.LayerNorm(1024, eps=1e-12)
     ).to(accelerator.device)
-
-    from collections import deque
-    feature_queue = {
-        "latents": deque(maxlen=256),
-        "captions": deque(maxlen=256),
-        "eeg": deque(maxlen=256),
-        "condition_feats": deque(maxlen=256),
-        "text_ids": deque(maxlen=256),
-        "attention_mask": deque(maxlen=256)
-    }
     ### --------- ###
 
     temperature = nn.Parameter(torch.tensor(0.07)) #should be a parameter? TODO
@@ -467,7 +457,6 @@ def main(args):
 
     #for name, param in controlnet.named_parameters():
     #    print(name, param.shape)
-    accumulation_steps = 16 #if batch size = 4, effective batch =64
     image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
@@ -498,8 +487,8 @@ def main(args):
                 eeg_embedding = controlnet.controlnet_cond_embedding(controlnet_image, batch["eeg_subjects"], return_vector = False)
             
                 ### --------- ###
-                gram_loss,gram_volume, gram_volumeT, loss_d2a, loss_a2d, loss_dam = compute_gram_loss(latents, encoder_hidden_states, 
-                    eeg_embedding, batch, feature_queue, controlnet, latents_proj, text_proj, controlnet_image_proj, temperature, 
+                gram_loss,gram_volume, gram_volumeT, loss_d2a, loss_a2d, loss_dam = accel_compute_gram_loss(latents, encoder_hidden_states, 
+                    eeg_embedding, batch, latents_proj, text_proj, controlnet_image_proj, temperature, 
                     accelerator, hidden_trans_image_multimodal, hidden_trans_eeg_multimodal, text_encoder)
                 ### --------- ###
 

@@ -81,7 +81,6 @@ class ControlNetConditioningEmbedding(nn.Module):
         block_out_channels: Tuple[int, ...] = (16, 32, 96, 256),
     ):
         super().__init__()
-        print("\n\n INIT IN CONTROLNET FILE\n\n")
 
         self.conv_in = nn.Conv2d(conditioning_channels, block_out_channels[0], kernel_size=3, padding=1)
 

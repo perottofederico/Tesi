@@ -72,7 +72,13 @@ class ControlNetEEGConditioningEmbedding(nn.Module):
         #     nn.Conv2d(block_out_channels[-1], conditioning_embedding_channels, kernel_size=3, padding=1)
         # )
 
-    def forward(self, conditioning, subjects):
+    def forward(self, conditioning, subjects, return_vector=False):
+        if return_vector:
+            return self.forward_vector(conditioning, subjects)
+        else:
+            return self.forward_original(conditioning, subjects)
+        
+    def forward_original(self, conditioning, subjects):
         # #conditioning.shape must be #,128,512 but only in validation there is a 1 dimension that must be removed
         # if conditioning.shape[1] != 128:
         #     conditioning = conditioning.squeeze(1)
@@ -115,6 +121,30 @@ class ControlNetEEGConditioningEmbedding(nn.Module):
 
         return embedding
 
+        #method that returns only the vector features, before any spatial reshape, permute, padding, etc.
+    def forward_vector(self, conditioning, subjects):
+        if (conditioning.shape[1] > conditioning.shape[2]):
+            conditioning = conditioning.permute(0, 2, 1)
+    
+        # Apply padding if needed
+        padding_needed = 512 - conditioning.shape[2]
+        if padding_needed > 0:
+            conditioning = F.pad(conditioning, (0, padding_needed))
+
+        # Process through subject layers
+        conditioning = self.subj_layers(conditioning, subjects)
+
+        # Process through convolutional blocks
+        embedding = self.conv_in(conditioning)
+        embedding = F.silu(embedding)
+
+        for block in self.blocks:
+            embedding = block(embedding)
+            embedding = F.silu(embedding)
+
+        # Pool to get vector features
+        features = embedding.mean(dim=2)  # Average across time dimension
+        return features
 
 
 # x = torch.randn(4, 128, 512)
