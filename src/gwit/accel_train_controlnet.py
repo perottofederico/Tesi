@@ -28,6 +28,8 @@ import accelerate
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
+from torch.nn import LayerNorm as LayerNorm
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
@@ -111,6 +113,7 @@ def collate_fn(examples):
     conditioning_pixel_values = conditioning_pixel_values.to(memory_format=torch.contiguous_format).float()
     input_ids = torch.stack([example["input_ids"] for example in examples])
     attention_mask = torch.stack([example["attention_mask"] for example in examples])
+    attention_mask = attention_mask.to(memory_format=torch.contiguous_format).float()
     
     if "ALL" in args.dataset_name:
         # print([example["subject"] for example in examples])
@@ -126,6 +129,87 @@ def collate_fn(examples):
         "eeg_subjects": subjects  if "ALL" in args.dataset_name else torch.tensor([4]*input_ids.shape[0]),
     }
 
+def gelu(x):
+    """Implementation of the gelu activation function.
+        For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
+        0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+        Also see https://arxiv.org/abs/1606.08415
+    """
+    return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+    
+class GELU(nn.Module):
+    def forward(self, input_):
+        output = gelu(input_)
+        return output
+
+class Match_head(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.linear1 = nn.Linear(hidden_size, hidden_size)
+        self.activation = GELU()
+        self.layernorm = LayerNorm(hidden_size, eps=1e-12)
+        self.linear2 = nn.Linear(hidden_size, 2)
+    def forward(self, cls_token):
+        return self.linear2(self.layernorm(self.activation(self.linear1(cls_token))))
+    
+class CrossAttentionLayer(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(hidden_size, num_heads=8, batch_first=True)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        
+    def forward(self, text_features, condition_features):
+        # text_features: [batch_size, seq_length, hidden_size]
+        # condition_features: [batch_size, condition_seq_length, hidden_size]
+        residual = text_features
+        x_norm = self.layer_norm(text_features)
+        attn_output, _ = self.attention(
+            query=x_norm,
+            key=condition_features,
+            value=condition_features
+        )
+        return residual + attn_output
+    
+class BERTLikeMultimodalEncoder(nn.Module):
+    def __init__(self, clip_encoder):
+        super().__init__()
+        self.text_encoder = clip_encoder
+        num_layers = len(self.text_encoder.text_model.encoder.layers)
+        print("num_layers: ", num_layers)
+        
+        # Add cross-attention layers for each transformer block
+        #self.cross_attention_layers = nn.ModuleList([
+        #    CrossAttentionLayer(hidden_size=1024) 
+        #    for _ in range(num_layers)
+        #])
+        # Just one cross-attention layer for simplicity
+        self.cross_attention_layer = CrossAttentionLayer(hidden_size=1024)
+        # Binary classification head
+        # self.itm_head = nn.Linear(1024, 2)
+        
+    def forward(self, input_ids, attention_mask, condition_feats):
+         # Get embeddings from the text encoder
+        text_outputs = self.text_encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True
+        )
+        
+        hidden_states = text_outputs.last_hidden_state
+        
+        #if condition_feats is not None:
+        #    for cross_attn_layer in self.cross_attention_layers:
+        #        hidden_states = cross_attn_layer(hidden_states, condition_feats)
+        
+        # Just one cross-attention layer
+        if condition_feats is not None:
+            hidden_states = self.cross_attention_layer(hidden_states, condition_feats)
+
+        # Return structure similar to BERT's output for compatibility
+        # return type('BertOutput', (), {'last_hidden_state': hidden_states})
+        return hidden_states
+    
 
 def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
@@ -310,9 +394,9 @@ def main(args):
     ### --------- ###
     import torch.nn as nn
     # Projection Layers
-    latents_proj = nn.Linear(4, 128, bias=False).to(accelerator.device)
-    text_proj = nn.Linear(1024, 128, bias=False).to(accelerator.device)
-    controlnet_image_proj = nn.Linear(64, 128, bias=False).to(accelerator.device)
+    latents_proj = nn.Linear(4, 512, bias=False).to(accelerator.device) # 512 is the contrastive dim
+    text_proj = nn.Linear(1024, 512, bias=False).to(accelerator.device)
+    controlnet_image_proj = nn.Linear(320, 512, bias=False).to(accelerator.device)
     hidden_trans_image_multimodal = nn.Sequential(
             nn.Linear(4, 1024),  # 4 is the channel dimension from vae, 1024 is the multimodal dim, which i think is just the hidden dimension of the text encoder (bert uses 768)
             nn.LayerNorm(1024, eps=1e-12)
@@ -321,6 +405,8 @@ def main(args):
             nn.Linear(320, 1024),  # 320 is from the EEG encoder, 1024 is the multimodal dimension
             nn.LayerNorm(1024, eps=1e-12)
     ).to(accelerator.device)
+    itm_head = Match_head(1024).to(accelerator.device)
+    multimodal_encoder = BERTLikeMultimodalEncoder(text_encoder).to(accelerator.device)
     ### --------- ###
 
     temperature = nn.Parameter(torch.tensor(0.07)) #should be a parameter? TODO
@@ -489,7 +575,7 @@ def main(args):
                 ### --------- ###
                 gram_loss,gram_volume, gram_volumeT, loss_d2a, loss_a2d, loss_dam = accel_compute_gram_loss(latents, encoder_hidden_states, 
                     eeg_embedding, batch, latents_proj, text_proj, controlnet_image_proj, temperature, 
-                    accelerator, hidden_trans_image_multimodal, hidden_trans_eeg_multimodal, text_encoder)
+                    accelerator, hidden_trans_image_multimodal, hidden_trans_eeg_multimodal, itm_head, multimodal_encoder)
                 ### --------- ###
 
                 down_block_res_samples, mid_block_res_sample = controlnet(
@@ -526,7 +612,7 @@ def main(args):
                 ### --------- ###
                 print("\n Loss: ", loss, loss.shape)
                 gram_weight = 0.1 + min(1.0,global_step / (args.max_train_steps * 0.1))
-                total_loss = loss + 0.1 * (gram_loss + 0.1 * loss_dam) # 0.1 for now, make it an arg TODO
+                total_loss = loss + 1 * (gram_loss + 0.1 * loss_dam) # make it an arg ? TODO
                 ### --------- ###
 
 

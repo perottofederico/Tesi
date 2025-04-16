@@ -5,50 +5,9 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn import LayerNorm as LayerNorm
-import torch.utils.checkpoint
 from utils.distributed import all_gather_with_grad, concat_all_gather
 
 from gram_utils import volume_computation3
-
-def gelu(x):
-    """Implementation of the gelu activation function.
-        For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
-        0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
-        Also see https://arxiv.org/abs/1606.08415
-    """
-    return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
-    
-class GELU(nn.Module):
-    def forward(self, input_):
-        output = gelu(input_)
-        return output
-
-class Match_head(nn.Module):
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.linear1 = nn.Linear(hidden_size, hidden_size)
-        self.activation = GELU()
-        self.layernorm = LayerNorm(hidden_size, eps=1e-12)
-        self.linear2 = nn.Linear(hidden_size, 2)
-    def forward(self, cls_token):
-        return self.linear2(self.layernorm(self.activation(self.linear1(cls_token))))
-    
-class CrossAttentionLayer(nn.Module):
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.attention = nn.MultiheadAttention(hidden_size, num_heads=8)
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        
-    def forward(self, text_features, condition_features):
-        # text_features: [batch_size, seq_length, hidden_size]
-        # condition_features: [batch_size, condition_seq_length, hidden_size]
-        attended_features, _ = self.attention(
-            text_features.transpose(0, 1),
-            condition_features.transpose(0, 1),
-            condition_features.transpose(0, 1)
-        )
-        attended_features = attended_features.transpose(0, 1)
-        return self.layer_norm(text_features + attended_features)
 
 # Trying to replicate the get_multimodal_forward_input_vision behaviour but for images
 def get_multimodal_forward_input_image(latents, hidden_trans_image_multimodal, accelerator):
@@ -80,16 +39,15 @@ def get_multimodal_forward_input_eeg(eeg_embedding, hidden_trans_eeg_multimodal)
 
 def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch,
                       latents_proj, text_proj, controlnet_image_proj, temperature, accelerator, 
-                      hidden_trans_image_multimodal, hidden_trans_eeg_multimodal, text_encoder):
-    itm_head = Match_head(1024).to(accelerator.device)
+                      hidden_trans_image_multimodal, hidden_trans_eeg_multimodal, itm_head, multimodal_encoder):
+    
     ### --------- ###
     # POOLING
     pooled_latents = latents.mean(dim=[2,3]) #should be [b,4]
     # With CLIP the eos token has a similar role to the CLS token in BERT, so we take it as the pooled representation
     pooled_captions = encoder_hidden_states[:,-1,:] #should be [b, 1024]
-    pooled_eeg_embedding = eeg_embedding[:,:,0] 
-    # IS this mean necessary? TODO
-    pooled_eeg_embedding = torch.mean(pooled_eeg_embedding, dim=1) #should be [b,128]
+    #average across the spatial dimensions
+    pooled_eeg_embedding = eeg_embedding.mean(dim=[2,3]) #should be [b,320]
 
     #Projections
     projected_latents = latents_proj(pooled_latents) #should be [b,128]
@@ -203,13 +161,14 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     
     condition_feats = torch.cat((condition_feats_img_eeg,condition_feats_neg,condition_feats_img_eeg),dim=0)
 
-    cross_attention = CrossAttentionLayer(hidden_size=1024).to(accelerator.device)
-    output = text_encoder(input_ids=input_ids_1, attention_mask=attention_mask_1)
-    cross_attended_output = cross_attention(output.last_hidden_state, condition_feats)
+    #cross_attention = CrossAttentionLayer(hidden_size=1024).to(accelerator.device)
+    #output = text_encoder(input_ids=input_ids_1, attention_mask=attention_mask_1)
+    #cross_attended_output = cross_attention(output.last_hidden_state, condition_feats)
+    output = multimodal_encoder(input_ids=input_ids_1, attention_mask=attention_mask_1, condition_feats=condition_feats)
 
 
     batch_size = condition_feats_neg.shape[0]
-    logits = itm_head(cross_attended_output[:,0]) #.half()) TODO why half?
+    logits = itm_head(output[:,0]) #.half()) #TODO why half?
     ground_truth = torch.zeros(batch_size*3).long().cuda()
     ground_truth[:batch_size] = 1
     loss_dam = F.cross_entropy(logits,ground_truth) #itm (dtm)
@@ -266,7 +225,6 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
         print(f"  Random neg condition mean value: {random_values_cond.mean().item():.4f}")
         print(f"  DAM neg text mean value: {neg_values_text.mean().item():.4f}")
         print(f"  Random neg text mean value: {random_values_text.mean().item():.4f}")
-    
     ### --------- ###
     return (
         gram_loss,
