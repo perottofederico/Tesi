@@ -49,7 +49,7 @@ class ControlNetEEGConditioningEmbedding(nn.Module):
         is_sd_XL=False,#TODO: remove this and handle from outside
     ):
         super().__init__()
-        print("\n\n INIT IN GWIT FOLDER\n\n")
+        print("INIT IN GWIT FOLDER")
         #TEST
         self.x20 = x20
         self.is_sd_XL = is_sd_XL
@@ -121,7 +121,8 @@ class ControlNetEEGConditioningEmbedding(nn.Module):
 
         return embedding
 
-        #method that returns only the vector features, before any spatial reshape, permute, padding, etc.
+    
+    #method that returns only the vector features, before any spatial reshape, permute, padding, etc.
     def forward_vector(self, conditioning, subjects):
         if (conditioning.shape[1] > conditioning.shape[2]):
             conditioning = conditioning.permute(0, 2, 1)

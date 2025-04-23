@@ -120,7 +120,7 @@ def make_train_dataset(args, tokenizer, accelerator):
     base_dir = os.path.dirname(os.path.dirname(current_dir))
     print(base_dir, "aaaaaaa")
     # print(base_dir+"/EEGStyleGAN-ADA/EEG2Feat/Triplet_LSTM/CVPR40")
-    path_to_append = base_dir+f"\\EEGStyleGAN-ADA\\EEG2Feat\\Triplet_LSTM\\CVPR40" if "CVPR" in args.dataset_name else base_dir+f"\\EEGStyleGAN-ADA\\EEG2Feat\\Triplet_LSTM\\Thoughtviz"
+    path_to_append = base_dir+f"/EEGStyleGAN-ADA/EEG2Feat/Triplet_LSTM/CVPR40" if "CVPR" in args.dataset_name else base_dir+f"/EEGStyleGAN-ADA/EEG2Feat/Triplet_LSTM/Thoughtviz"
     sys.path.append(path_to_append)
     from network import EEGFeatNet
     # sys.path.append(base_dir+"/diffusers/src/dataset_EEG/")
@@ -136,11 +136,11 @@ def make_train_dataset(args, tokenizer, accelerator):
     import pickle
 
     # Load the model from the file
-    pkl_path = base_dir+'\\gwit\\dataset_EEG\\knn_model.pkl' if "CVPR" in args.dataset_name else base_dir+'\\gwit\\dataset_EEG\\knn_model_TVIZ.pkl'
+    pkl_path = base_dir+'/gwit/dataset_EEG/knn_model.pkl' if "CVPR" in args.dataset_name else base_dir+'/gwit/dataset_EEG/knn_model_TVIZ.pkl'
     with open(pkl_path, 'rb') as f:
         knn_cv = pickle.load(f)
-    ckpt_path = base_dir+"\\EEGStyleGAN-ADA\\EEG2Feat\\Triplet_LSTM\\CVPR40\\EXPERIMENT_29\\bestckpt\\eegfeat_all_0.9665178571428571.pth" if "CVPR" in args.dataset_name \
-        else base_dir+'\\EEGStyleGAN-ADA\\EEG2Feat\\Triplet_LSTM\\Thoughtviz\\EXPERIMENT_1\\bestckpt\\eegfeat_all_0.7212357954545454.pth' 
+    ckpt_path = base_dir+"/EEGStyleGAN-ADA/EEG2Feat/Triplet_LSTM/CVPR40/EXPERIMENT_29/bestckpt/eegfeat_all_0.9665178571428571.pth" if "CVPR" in args.dataset_name \
+        else base_dir+'/EEGStyleGAN-ADA/EEG2Feat/Triplet_LSTM/Thoughtviz/EXPERIMENT_1/bestckpt/eegfeat_all_0.7212357954545454.pth' 
     model.load_state_dict(torch.load(ckpt_path)['model_state_dict'])
 
     def get_caption_from_classifier(eeg, labels):

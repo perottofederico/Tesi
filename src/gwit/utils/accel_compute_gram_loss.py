@@ -37,9 +37,7 @@ def get_multimodal_forward_input_eeg(eeg_embedding, hidden_trans_eeg_multimodal)
     return eeg_embedding  # Shape: [b, 4096, multimodal_dim]
 
 
-def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch,
-                      latents_proj, text_proj, controlnet_image_proj, temperature, accelerator, 
-                      hidden_trans_image_multimodal, hidden_trans_eeg_multimodal, itm_head, multimodal_encoder):
+def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch, accelerator, controlnet):
     
     ### --------- ###
     # POOLING
@@ -50,9 +48,9 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     pooled_eeg_embedding = eeg_embedding.mean(dim=[2,3]) #should be [b,320]
 
     #Projections
-    projected_latents = latents_proj(pooled_latents) #should be [b,128]
-    projected_captions = text_proj(pooled_captions) #should be [b,128]
-    projected_controlnet_image = controlnet_image_proj(pooled_eeg_embedding) #should be [b,128]
+    projected_latents = controlnet.latents_proj(pooled_latents) #should be [b,128]
+    projected_captions = controlnet.text_proj(pooled_captions) #should be [b,128]
+    projected_controlnet_image = controlnet.controlnet_image_proj(pooled_eeg_embedding) #should be [b,128]
 
     # normalize
     projected_latents = F.normalize(projected_latents, dim=-1) #feat_v
@@ -64,25 +62,25 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     gathered_eeg = concat_all_gather(projected_controlnet_image) #feat_a_all
                 
     input_ids = batch['input_ids']
-    print("input_ids shape: ", input_ids.shape)
+    #print("input_ids shape: ", input_ids.shape)
     input_ids_collate = concat_all_gather(input_ids)
-    print("input_ids_collate shape: ", input_ids_collate.shape)
+    #print("input_ids_collate shape: ", input_ids_collate.shape)
 
     attention_mask = batch['attention_mask']
-    print("attention_mask shape: ", attention_mask.shape)
+    #print("attention_mask shape: ", attention_mask.shape)
     attention_mask_collate = concat_all_gather(attention_mask)
-    print("attention_mask_collate shape: ", attention_mask_collate.shape)
+    #print("attention_mask_collate shape: ", attention_mask_collate.shape)
 
     # volume computation
     gram_volume = volume_computation3(projected_captions, gathered_latents, gathered_eeg) #volume_computation3(projected_captions, combined_latents, combined_eeg)
-    gram_volume = gram_volume / temperature
+    gram_volume = gram_volume / controlnet.temperature
     gram_volumeT = volume_computation3(gathered_captions, projected_latents, projected_controlnet_image).T #volume_computation3(combined_captions, projected_latents, projected_controlnet_image).T
-    gram_volumeT = gram_volumeT / temperature
+    gram_volumeT = gram_volumeT / controlnet.temperature
                 
     # Compute gram losses:
     batch_size = projected_captions.size(0)
     rank = accelerator.process_index
-    print("batch_size: ", batch_size)
+    #print("batch_size: ", batch_size)
     print("gram_volume shape: ", gram_volume.shape)
     print("gram_volumeT shape: ", gram_volumeT.shape)
     print("Diagonal values of gram_volume:", torch.diagonal(gram_volume[:batch_size, :batch_size]))
@@ -94,8 +92,8 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     loss_a2d = F.cross_entropy(-gram_volumeT, targets, label_smoothing=0.1) 
 
     gram_loss = (loss_d2a + loss_a2d) / 2
-    print("\n projected images and text cosine similarity",F.cosine_similarity(projected_latents, projected_captions, dim=-1).mean().detach().item())
-    print("\n Gram Loss: ", gram_loss, gram_loss.shape)
+    #print("projected images and text cosine similarity",F.cosine_similarity(projected_latents, projected_captions, dim=-1).mean().detach().item())
+    print("Gram Loss: ", gram_loss, gram_loss.shape)
 
 
     '''
@@ -115,10 +113,10 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     Then condition_feats_v and condition_feats_a are concatenated (torch.cat).
     '''
     condition_feats_img = latents
-    condition_feats_img = get_multimodal_forward_input_image(condition_feats_img, hidden_trans_image_multimodal, accelerator) #condition_feats_v
-    print("condition_feats_img shape: ", condition_feats_img.shape)
+    condition_feats_img = get_multimodal_forward_input_image(condition_feats_img, controlnet.hidden_trans_image_multimodal, accelerator) #condition_feats_v
+    print("\ncondition_feats_img shape: ", condition_feats_img.shape)
     condition_feats_eeg = eeg_embedding
-    condition_feats_eeg = get_multimodal_forward_input_eeg(condition_feats_eeg, hidden_trans_eeg_multimodal) #condition_feats_a
+    condition_feats_eeg = get_multimodal_forward_input_eeg(condition_feats_eeg, controlnet.hidden_trans_eeg_multimodal) #condition_feats_a
     print("condition_feats_eeg shape: ", condition_feats_eeg.shape)
 
     condition_feats_img_eeg = torch.cat((condition_feats_img, condition_feats_eeg),dim=1) #condition_feats
@@ -134,7 +132,7 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     # From original code
     with torch.no_grad():
         weights_t2cond = F.softmax(-(gram_volume), dim=1) + 1e-4
-        print("weights_t2cond shape: ", weights_t2cond.shape)
+        #print("weights_t2cond shape: ", weights_t2cond.shape)
         weights_t2cond[:, rank * batch_size : rank * batch_size + batch_size].fill_diagonal_(0)
 
         weights_cond2t = F.softmax(-(gram_volumeT), dim=1) + 1e-4
@@ -164,68 +162,67 @@ def accel_compute_gram_loss(latents, encoder_hidden_states, eeg_embedding, batch
     #cross_attention = CrossAttentionLayer(hidden_size=1024).to(accelerator.device)
     #output = text_encoder(input_ids=input_ids_1, attention_mask=attention_mask_1)
     #cross_attended_output = cross_attention(output.last_hidden_state, condition_feats)
-    output = multimodal_encoder(input_ids=input_ids_1, attention_mask=attention_mask_1, condition_feats=condition_feats)
+    output = controlnet.multimodal_encoder(input_ids=input_ids_1, attention_mask=attention_mask_1, condition_feats=condition_feats)
 
 
     batch_size = condition_feats_neg.shape[0]
-    logits = itm_head(output[:,0]) #.half()) #TODO why half?
+    logits = controlnet.itm_head(output[:,0]) #.half()) #TODO why half?
     ground_truth = torch.zeros(batch_size*3).long().cuda()
     ground_truth[:batch_size] = 1
     loss_dam = F.cross_entropy(logits,ground_truth) #itm (dtm)
     print("loss_dam: ", loss_dam)
-    #dam_loss = (0.1 * loss)
     
-    print("Logging for dam loss:")
+    #print("Logging for dam loss:")
     # Classification metrics
-    with torch.no_grad():
-        # Get predictions
-        predictions = torch.argmax(logits, dim=1)
-        # Calculate accuracy
-        accuracy = (predictions == ground_truth).float().mean()
-        # Separate accuracy for positive and negative pairs
-        pos_acc = (predictions[:batch_size] == ground_truth[:batch_size]).float().mean()
-        neg_acc1 = (predictions[batch_size:2*batch_size] == ground_truth[batch_size:2*batch_size]).float().mean()
-        neg_acc2 = (predictions[2*batch_size:] == ground_truth[2*batch_size:]).float().mean()
-
-        print(f"DAM Classification Metrics:")
-        print(f"  Total Accuracy: {accuracy.item():.4f}")
-        print(f"  Positive Pair Accuracy: {pos_acc.item():.4f}")
-        print(f"  Negative Pair Type 1 Accuracy: {neg_acc1.item():.4f}")
-        print(f"  Negative Pair Type 2 Accuracy: {neg_acc2.item():.4f}")
-        
-        # Logit distribution
-        pos_logits = logits[:batch_size, 1] - logits[:batch_size, 0]  # Higher value = more confident positive
-        neg1_logits = logits[batch_size:2*batch_size, 1] - logits[batch_size:2*batch_size, 0]
-        neg2_logits = logits[2*batch_size:, 1] - logits[2*batch_size:, 0]
-
-        print(f"Logit Distribution:")
-        print(f"  Positive pairs - Mean: {pos_logits.mean().item():.4f}, Std: {pos_logits.std().item():.4f}")
-        print(f"  Negative pairs (condition neg) - Mean: {neg1_logits.mean().item():.4f}, Std: {neg1_logits.std().item():.4f}")
-        print(f"  Negative pairs (text neg) - Mean: {neg2_logits.mean().item():.4f}, Std: {neg2_logits.std().item():.4f}")
-        print(f"  Margin (pos-neg): {(pos_logits.mean() - torch.cat([neg1_logits, neg2_logits]).mean()).item():.4f}")
-
-        # Negative mininq quality
-        # Get gram matrix values for selected negatives
-        neg_indices_cond = [torch.multinomial(weights_t2cond[b, :min(weights_t2cond.shape[1], condition_feats_collate.shape[0])], 1).item() for b in range(batch_size)]
-        neg_indices_text = [torch.multinomial(weights_cond2t[b, :batch_size], 1).item() for b in range(batch_size)]
-        
-        # Get values from gram matrices for these indices
-        neg_values_cond = torch.tensor([gram_volume[b, idx] for b, idx in enumerate(neg_indices_cond)])
-        neg_values_text = torch.tensor([gram_volumeT[b, idx] for b, idx in enumerate(neg_indices_text)])
-        
-        # Compare with random sampling
-        random_indices_cond = torch.randint(0, min(weights_t2cond.shape[1], condition_feats_collate.shape[0]), (batch_size,))
-        random_indices_text = torch.randint(0, batch_size, (batch_size,))
-        
-        random_values_cond = torch.tensor([gram_volume[b, idx] for b, idx in enumerate(random_indices_cond)])
-        random_values_text = torch.tensor([gram_volumeT[b, idx] for b, idx in enumerate(random_indices_text)])
-        
-        print(f"Negative Mining Quality:")
-        print(f"  DAM neg condition mean value: {neg_values_cond.mean().item():.4f}")
-        print(f"  Random neg condition mean value: {random_values_cond.mean().item():.4f}")
-        print(f"  DAM neg text mean value: {neg_values_text.mean().item():.4f}")
-        print(f"  Random neg text mean value: {random_values_text.mean().item():.4f}")
-    ### --------- ###
+    #with torch.no_grad():
+    #    # Get predictions
+    #    predictions = torch.argmax(logits, dim=1)
+    #    # Calculate accuracy
+    #    accuracy = (predictions == ground_truth).float().mean()
+    #    # Separate accuracy for positive and negative pairs
+    #    pos_acc = (predictions[:batch_size] == ground_truth[:batch_size]).float().mean()
+    #    neg_acc1 = (predictions[batch_size:2*batch_size] == ground_truth[batch_size:2*batch_size]).float().mean()
+    #    neg_acc2 = (predictions[2*batch_size:] == ground_truth[2*batch_size:]).float().mean()
+#
+    #    print(f"DAM Classification Metrics:")
+    #    print(f"  Total Accuracy: {accuracy.item():.4f}")
+    #    print(f"  Positive Pair Accuracy: {pos_acc.item():.4f}")
+    #    print(f"  Negative Pair Type 1 Accuracy: {neg_acc1.item():.4f}")
+    #    print(f"  Negative Pair Type 2 Accuracy: {neg_acc2.item():.4f}")
+    #    
+    #    # Logit distribution
+    #    pos_logits = logits[:batch_size, 1] - logits[:batch_size, 0]  # Higher value = more confident positive
+    #    neg1_logits = logits[batch_size:2*batch_size, 1] - logits[batch_size:2*batch_size, 0]
+    #    neg2_logits = logits[2*batch_size:, 1] - logits[2*batch_size:, 0]
+#
+    #    print(f"Logit Distribution:")
+    #    print(f"  Positive pairs - Mean: {pos_logits.mean().item():.4f}, Std: {pos_logits.std().item():.4f}")
+    #    print(f"  Negative pairs (condition neg) - Mean: {neg1_logits.mean().item():.4f}, Std: {neg1_logits.std().item():.4f}")
+    #    print(f"  Negative pairs (text neg) - Mean: {neg2_logits.mean().item():.4f}, Std: {neg2_logits.std().item():.4f}")
+    #    print(f"  Margin (pos-neg): {(pos_logits.mean() - torch.cat([neg1_logits, neg2_logits]).mean()).item():.4f}")
+#
+    #    # Negative mininq quality
+    #    # Get gram matrix values for selected negatives
+    #    neg_indices_cond = [torch.multinomial(weights_t2cond[b, :min(weights_t2cond.shape[1], condition_feats_collate.shape[0])], 1).item() for b in range(batch_size)]
+    #    neg_indices_text = [torch.multinomial(weights_cond2t[b, :batch_size], 1).item() for b in range(batch_size)]
+    #    
+    #    # Get values from gram matrices for these indices
+    #    neg_values_cond = torch.tensor([gram_volume[b, idx] for b, idx in enumerate(neg_indices_cond)])
+    #    neg_values_text = torch.tensor([gram_volumeT[b, idx] for b, idx in enumerate(neg_indices_text)])
+    #    
+    #    # Compare with random sampling
+    #    random_indices_cond = torch.randint(0, min(weights_t2cond.shape[1], condition_feats_collate.shape[0]), (batch_size,))
+    #    random_indices_text = torch.randint(0, batch_size, (batch_size,))
+    #    
+    #    random_values_cond = torch.tensor([gram_volume[b, idx] for b, idx in enumerate(random_indices_cond)])
+    #    random_values_text = torch.tensor([gram_volumeT[b, idx] for b, idx in enumerate(random_indices_text)])
+    #    
+    #    print(f"Negative Mining Quality:")
+    #    print(f"  DAM neg condition mean value: {neg_values_cond.mean().item():.4f}")
+    #    print(f"  Random neg condition mean value: {random_values_cond.mean().item():.4f}")
+    #    print(f"  DAM neg text mean value: {neg_values_text.mean().item():.4f}")
+    #    print(f"  Random neg text mean value: {random_values_text.mean().item():.4f}")
+    #### --------- ###
     return (
         gram_loss,
         gram_volume,

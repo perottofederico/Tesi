@@ -14,8 +14,10 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import math
 import torch
 from torch import nn
+from torch.nn import LayerNorm as LayerNorm
 from torch.nn import functional as F
 
 
@@ -42,6 +44,90 @@ from .unets.unet_2d_condition import UNet2DConditionModel
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+###
+def gelu(x):
+    """Implementation of the gelu activation function.
+        For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
+        0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+        Also see https://arxiv.org/abs/1606.08415
+    """
+    return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+    
+class GELU(nn.Module):
+    def forward(self, input_):
+        output = gelu(input_)
+        return output
+
+class Match_head(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.linear1 = nn.Linear(hidden_size, hidden_size)
+        self.activation = GELU()
+        self.layernorm = LayerNorm(hidden_size, eps=1e-12)
+        self.linear2 = nn.Linear(hidden_size, 2)
+    def forward(self, cls_token):
+        return self.linear2(self.layernorm(self.activation(self.linear1(cls_token))))
+    
+class CrossAttentionLayer(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(hidden_size, num_heads=8, batch_first=True)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        
+    def forward(self, text_features, condition_features):
+        # text_features: [batch_size, seq_length, hidden_size]
+        # condition_features: [batch_size, condition_seq_length, hidden_size]
+        residual = text_features
+        x_norm = self.layer_norm(text_features)
+        attn_output, _ = self.attention(
+            query=x_norm,
+            key=condition_features,
+            value=condition_features
+        )
+        return residual + attn_output
+    
+class BERTLikeMultimodalEncoder(nn.Module):
+    def __init__(self, clip_encoder):
+        super().__init__()
+        self.text_encoder = clip_encoder
+        num_layers = len(self.text_encoder.text_model.encoder.layers)
+        print("num_layers: ", num_layers)
+        
+        # Add cross-attention layers for each transformer block
+        #self.cross_attention_layers = nn.ModuleList([
+        #    CrossAttentionLayer(hidden_size=1024) 
+        #    for _ in range(num_layers)
+        #])
+        # Just one cross-attention layer for simplicity
+        self.cross_attention_layer = CrossAttentionLayer(hidden_size=1024)
+        # Binary classification head
+        # self.itm_head = nn.Linear(1024, 2)
+        
+    def forward(self, input_ids, attention_mask, condition_feats):
+         # Get embeddings from the text encoder
+        text_outputs = self.text_encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True
+        )
+        
+        hidden_states = text_outputs.last_hidden_state
+        
+        #if condition_feats is not None:
+        #    for cross_attn_layer in self.cross_attention_layers:
+        #        hidden_states = cross_attn_layer(hidden_states, condition_feats)
+        
+        # Just one cross-attention layer
+        if condition_feats is not None:
+            hidden_states = self.cross_attention_layer(hidden_states, condition_feats)
+
+        # Return structure similar to BERT's output for compatibility
+        # return type('BertOutput', (), {'last_hidden_state': hidden_states})
+        return hidden_states
+###
+
 
 
 @dataclass
@@ -221,6 +307,10 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         global_pool_conditions: bool = False,
         addition_embed_type_num_heads: int = 64,
         n_subjects: int = 7,
+        ###
+        contrastive_dim: int = 512,
+        multimodal_dim: int = 1024
+        ###
     ):
         super().__init__()
 
@@ -459,6 +549,37 @@ class ControlNetModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             )
         else:
             raise ValueError(f"unknown mid_block_type : {mid_block_type}")
+
+
+        ###
+        # Projection Layers for gram loss computation
+        self.latents_proj = nn.Linear(4, contrastive_dim, bias=False)
+        self.text_proj = nn.Linear(1024, contrastive_dim, bias=False)
+        self.controlnet_image_proj = nn.Linear(320, contrastive_dim, bias=False)
+        # Temperature param
+        self.temperature = nn.Parameter(torch.tensor(0.07))
+        # Multimodal transformation layers
+        self.hidden_trans_image_multimodal = nn.Sequential(
+            nn.Linear(4, multimodal_dim),
+            nn.LayerNorm(multimodal_dim, eps=1e-12)
+        )
+        
+        self.hidden_trans_eeg_multimodal = nn.Sequential(
+            nn.Linear(320, multimodal_dim),
+            nn.LayerNorm(multimodal_dim, eps=1e-12)
+        )
+        
+        # Match head for DAM loss
+        self.itm_head = Match_head(multimodal_dim)
+
+        # Create multimodal encoder 
+        self.multimodal_encoder = None  # Will be set after model creation
+
+    
+    def set_multimodal_encoder(self, text_encoder):
+        """Set the multimodal encoder using the text encoder model"""
+        self.multimodal_encoder = BERTLikeMultimodalEncoder(text_encoder)
+
 
     @classmethod
     def from_unet(
