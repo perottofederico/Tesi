@@ -340,6 +340,13 @@ def parse_args(input_args=None):
             "The fixed caption to be used for prompt training."
         ),
     )
+    parser.add_argument(
+        "--eeg_encoder_name",
+        type=str,
+        required=True,
+        default = "gwit", ## either "gwit" or "lstm"
+        help = ("The eeg encoder to be used for training, either 'gwit' or 'lstm'.")
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -355,11 +362,11 @@ def parse_args(input_args=None):
     if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
         raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
 
-    if args.validation_prompt is not None and args.validation_image is None:
-        raise ValueError("`--validation_image` must be set if `--validation_prompt` is set")
-
-    if args.validation_prompt is None and args.validation_image is not None:
-        raise ValueError("`--validation_prompt` must be set if `--validation_image` is set")
+    #if args.validation_prompt is not None and args.validation_image is None:
+    #    raise ValueError("`--validation_image` must be set if `--validation_prompt` is set")
+#
+    #if args.validation_prompt is None and args.validation_image is not None:
+    #    raise ValueError("`--validation_prompt` must be set if `--validation_image` is set")
 
     if (
         args.validation_image is not None

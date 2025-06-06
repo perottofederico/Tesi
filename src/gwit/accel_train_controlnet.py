@@ -20,7 +20,7 @@ import logging
 import math
 import os
 os.environ['HF_HOME'] = './cache/'
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
+#os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import random
 import shutil
 from pathlib import Path

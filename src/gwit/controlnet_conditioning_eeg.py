@@ -144,9 +144,28 @@ class ControlNetEEGConditioningEmbedding(nn.Module):
             embedding = F.silu(embedding)
 
         # Pool to get vector features
-        features = embedding.mean(dim=2)  # Average across time dimension
-        return features
+        #features = embedding.mean(dim=2)  # Average across time dimension
+        return embedding
 
+    def reshape_eeg_embedding(self, embedding):
+        # Reshape the EEG embedding to the desired shape
+        if self.x20:
+            embedding = torch.cat([embedding]*20, dim=0)
+        embedding = embedding.reshape(embedding.shape[0],
+                                      self.conditioning_embedding_channels,
+                                      128 if self.is_sd_XL else 64,
+                                      128 if self.is_sd_XL else 64) if self.x20 else  embedding.reshape(embedding.shape[0],
+                                          self.conditioning_embedding_channels,
+                                    embedding.shape[1] // self.conditioning_embedding_channels,
+                                      embedding.shape[2])
+        embedding = embedding.permute(0, 1, 3, 2)
+        if not self.x20:
+            # Pad to (4, 320, 64, 64)
+            padding = (0, 120, 0, 64) if self.is_sd_XL else (0, 64-embedding.shape[3], 0, 0)# This pads the right side by 120 and the bottom by 64
+            # padding = (0, (128 if self.is_sd_XL else 64)-embedding.shape[3], 0, 0)  # Pad the last dimension to 64
+            embedding = nn.functional.pad(embedding, padding, mode='constant', value=0)
+        
+        return embedding
 
 # x = torch.randn(4, 128, 512)
 # weights = torch.randn(6, 3, 3)
