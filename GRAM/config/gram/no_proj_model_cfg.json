@@ -1,0 +1,12 @@
+{
+    "model_type": "gram",
+    "itm_ratio": 0.1,
+    "frozen_vision": true,
+    "checkpointing": false,
+    "max_caption_len": 77,
+    "contra_dim": 1024,
+    "vision_resolution": 224,
+    "ret_bidirection_evaluation": false,
+    "itm_rerank_num": 50,
+    "evaluation_type": "evaluation_mm"
+}

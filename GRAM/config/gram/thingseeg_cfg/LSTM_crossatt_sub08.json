@@ -1,0 +1,47 @@
+{
+    "run_cfg": {
+        "default": "./config/gram/default_run_cfg.json",
+        "learning_rate": 3e-04
+    },
+    "model_cfg": {
+        "default": "./config/gram/no_proj_model_cfg.json",
+        "vision_encoder_type": "mine",
+        "eeg_encoder_type": "lstm_cross_attention"
+    },
+    "data_cfg": {
+        "train": [
+            {
+                "type": "THINGS",
+                "training": true,
+                "name": "THINGS_LSTM_crossatt_sub08",
+                "subject_num": ["sub_08"],
+                "resolution": 224,
+                "classes_to_remove": [],
+                "split": "train",
+                "task": "ret%et%ev%evt",
+                "good_captions": true,
+                "epoch": 40,
+                "n_workers": 2,
+                "batch_size": 64
+            }
+        ],
+        "val": [
+            {
+                "type": "THINGS",
+                "training": false,
+                "name": "THINGS_LSTM_crossatt_sub08",
+                "subject_num": ["sub_08"],
+                "image_column":"image",
+                "caption_column":"caption",
+                "conditioning_image_column":"conditioning_image",
+                "resolution": 224,
+                "classes_to_keep": [],
+                "split": "test",
+                "task": "ret%et%ev%evt",
+                "good_captions": true,
+                "n_workers": 2,
+                "batch_size": 200
+            }
+        ]
+    }
+}

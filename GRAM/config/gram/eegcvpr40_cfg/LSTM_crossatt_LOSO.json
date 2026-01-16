@@ -1,0 +1,50 @@
+{
+    "run_cfg": {
+        "default": "./GRAM_cleaned/GRAM_main/config/gram/default_run_cfg.json",
+        "learning_rate": 3e-04
+    },
+    "model_cfg": {
+        "default": "./GRAM_cleaned/GRAM_main/config/gram/no_proj_model_cfg.json",
+        "vision_encoder_type": "mine",
+        "eeg_encoder_type": "lstm_cross_attention"
+    },
+    "data_cfg": {
+        "train": [
+            {
+                "type": "EEGCVPR",
+                "training": true,
+                "name": "EEGCVPR40_ALL_subject",
+                "subject_num": [1,2,3,5,6],
+                "image_column":"image",
+                "caption_column":"caption",
+                "conditioning_image_column":"conditioning_image",
+                "resolution": 224,
+                "classes_to_remove": [],
+                "split": "train",
+                "task": "ret%et%ev%evt",
+                "good_captions": true,
+                "epoch": 200,
+                "n_workers": 2,
+                "batch_size": 64
+            }
+        ],
+        "val": [
+            {
+                "type": "eeg",
+                "training": false,
+                "name": "EEGCVPR40_ALL_subject",
+                "subject_num": 4,
+                "image_column":"image",
+                "caption_column":"caption",
+                "conditioning_image_column":"conditioning_image",
+                "resolution": 224,
+                "classes_to_keep": [],
+                "split": "validation",
+                "task": "ret%et%ev%evt",
+                "good_captions": true,
+                "n_workers": 2,
+                "batch_size": 64
+            }
+        ]
+    }
+}

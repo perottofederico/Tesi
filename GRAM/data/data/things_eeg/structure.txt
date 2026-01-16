@@ -1,0 +1,13 @@
+-preprossed_data_250Hz
+    -sub01
+        -preprossed_eeg_test.npy
+        -preprossed_eeg_training.npy
+    -...
+-test_images
+    -00001_<class_name>
+        -<class_name>.jpg
+-training_images
+    -00001_<class_name>
+        -<class_name>_01b.jpg
+        -...
+-image_metadata.npy
